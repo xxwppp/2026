@@ -492,22 +492,28 @@ class QinglongEnvPlugin(Star):
                 except (IndexError, ValueError):
                     await e.send(e.plain_result("序号无效")); ctl.keep(timeout=WAIT_TIMEOUT); return
                 s["sep"] = sep
-                if self.github_raw_base:
-                    s["step"] = 45
-                    await e.send(e.plain_result("请输入脚本文件名（如 ydyp.py，对应 GitHub 仓库里的文件，输入q跳过）"))
-                else:
-                    self.storage.save_project(s["proj"], s["var"], s["sep"], s["inst"], s.get("desc", ""))
-                    await e.send(e.plain_result(f"✅ 项目「{s['proj']}」创建成功"))
-                    s["step"] = 0; await e.send(e.plain_result(MAIN_MENU))
+                s["step"] = 45
+                await e.send(e.plain_result("请输入青龙订阅名称（如 我的脚本，更新项目时自动运行，输入q跳过）"))
                 ctl.keep(timeout=WAIT_TIMEOUT)
 
             elif s["step"] == 45:
+                sn = e.message_str.strip()
+                if sn.lower() == "q":
+                    sn = ""
+                s["subname"] = sn; s["step"] = 46
+                await e.send(e.plain_result("请输入脚本文件名（如 ydyp.py，对应 GitHub 仓库里的文件，输入q跳过）"))
+                ctl.keep(timeout=WAIT_TIMEOUT)
+
+            elif s["step"] == 46:
                 sf = e.message_str.strip()
                 if sf.lower() == "q":
                     sf = ""
                 s["step"] = 0
-                self.storage.save_project(s["proj"], s["var"], s["sep"], s["inst"], s.get("desc", ""), sf)
-                await e.send(e.plain_result(f"✅ 项目「{s['proj']}」创建成功" + (f"，脚本 {sf}" if sf else "")))
+                self.storage.save_project(s["proj"], s["var"], s["sep"], s["inst"], s.get("desc", ""), sf, s.get("subname", ""))
+                msg = f"✅ 项目「{s['proj']}」创建成功"
+                if s.get("subname"): msg += f"，订阅 {s['subname']}"
+                if sf: msg += f"，脚本 {sf}"
+                await e.send(e.plain_result(msg))
                 await e.send(e.plain_result(MAIN_MENU))
                 ctl.keep(timeout=WAIT_TIMEOUT)
 
@@ -523,8 +529,27 @@ class QinglongEnvPlugin(Star):
                     await e.send(e.plain_result("序号错误")); ctl.keep(timeout=WAIT_TIMEOUT); return
                 pname = s["upname"]
                 proj = self.storage.get_project(pname)
+                subname = (proj or {}).get("subscription_name", "")
                 sf = (proj or {}).get("script_filename", "")
-                if self.github_raw_base and sf:
+                client = self._get_client(pname)
+                if not client:
+                    await e.send(e.plain_result("青龙实例不可用"))
+                    s["step"] = 0; await e.send(e.plain_result(MAIN_MENU)); ctl.keep(timeout=WAIT_TIMEOUT); return
+                if subname:
+                    await e.send(e.plain_result(f"⏳ 正在查找订阅「{subname}」..."))
+                    subs = await client.list_subscriptions(subname)
+                    matches = [s for s in subs if s.get("name") == subname]
+                    if not matches:
+                        await e.send(e.plain_result(f"❌ 未找到订阅「{subname}」，请在青龙面板检查"))
+                        s["step"] = 0; await e.send(e.plain_result(MAIN_MENU)); ctl.keep(timeout=WAIT_TIMEOUT); return
+                    sub_id = matches[0]["id"]
+                    ok = await client.run_subscription(sub_id)
+                    if ok:
+                        await e.send(e.plain_result(f"✅ 已触发订阅「{subname}」运行，青龙正从 GitHub 拉取最新脚本"))
+                    else:
+                        await e.send(e.plain_result("❌ 运行订阅失败，请检查青龙面板状态"))
+                    s["step"] = 0; await e.send(e.plain_result(MAIN_MENU)); ctl.keep(timeout=WAIT_TIMEOUT)
+                elif self.github_raw_base and sf:
                     url = f"{self.github_raw_base}/{sf}"
                     await e.send(e.plain_result(f"⏳ 正在从 GitHub 拉取 {sf}..."))
                     try:
@@ -539,10 +564,6 @@ class QinglongEnvPlugin(Star):
                         s["step"] = 0; await e.send(e.plain_result(MAIN_MENU)); ctl.keep(timeout=WAIT_TIMEOUT); return
                     ext = self._detect_extension(content)
                     filename = sf if sf.endswith((".py", ".js")) else sf + ext
-                    client = self._get_client(pname)
-                    if not client:
-                        await e.send(e.plain_result("青龙实例不可用"))
-                        s["step"] = 0; await e.send(e.plain_result(MAIN_MENU)); ctl.keep(timeout=WAIT_TIMEOUT); return
                     ok = await client.create_or_update_script(filename, content)
                     if ok:
                         await e.send(e.plain_result(f"✅ 脚本「{filename}」已更新到青龙"))
@@ -687,7 +708,8 @@ class QinglongEnvPlugin(Star):
                 "   3.# - 用 # 拼接\n"
                 "   4.@ - 用 @ 拼接\n"
                 "   5.& - 用 & 拼接\n"
-                " 6. 输入脚本文件名（如 ydyp.py，配置后更新项目自动拉取）",
+                " 6. 输入青龙订阅名称（更新项目时自动运行订阅）\n"
+                " 7. 输入脚本文件名（如 ydyp.py，配置后更新项目自动拉取）",
             "项目列表":
                 "查看所有项目（按青龙实例分组显示）。\n"
                 "选中项目后可添加账号：\n"
@@ -706,15 +728,17 @@ class QinglongEnvPlugin(Star):
                 " 2.删除账号中的项目 — 从所有项目中删除指定备注名的账号\n\n"
                 "支持输入 0 全选，删除后自动同步青龙面板",
             "更新项目":
-                "更新青龙面板中对应项目的脚本。\n"
-                "两种模式：\n"
-                " 1.自动模式 — 若项目已配置脚本文件名，选项目后自动从 GitHub 拉取\n"
-                " 2.手动模式 — 输入脚本内容（直接贴代码）或 GitHub raw URL\n\n"
+                "更新青龙面板中对应项目的脚本或运行订阅。\n"
+                "三种模式（优先级从高到低）：\n"
+                " 1.订阅模式 — 若项目配置了订阅名称，选项目后自动运行青龙订阅\n"
+                " 2.自动拉取 — 若配置了脚本文件名，从 GitHub 自动下载上传\n"
+                " 3.手动模式 — 输入 raw URL 或粘贴代码\n\n"
                 "交互流程：\n"
                 " 1. 选择需要更新脚本的项目\n"
-                " 2a. 已配置脚本文件名 → 自动下载更新\n"
-                " 2b. 未配置 → 输入 raw URL 或粘贴代码\n"
-                " 3. 插件自动上传/更新到青龙面板",
+                " 2a. 有订阅名称 → 自动运行青龙订阅，从 GitHub 拉取\n"
+                " 2b. 有脚本文件名 → 自动下载并上传\n"
+                " 2c. 都未配置 → 输入 raw URL 或粘贴代码\n"
+                " 3. 完成更新",
             "删除项目":
                 "删除整个项目及其所有账号数据。\n"
                 "交互流程：\n"
@@ -808,21 +832,27 @@ class QinglongEnvPlugin(Star):
                     ctl.keep(timeout=WAIT_TIMEOUT)
                     return
                 s["sep"] = sep
-                if self.github_raw_base:
-                    s["step"] = 5
-                    await e.send(e.plain_result("请输入脚本文件名（如 ydyp.py，对应 GitHub 仓库里的文件，输入q跳过）"))
-                    ctl.keep(timeout=WAIT_TIMEOUT)
-                else:
-                    self.storage.save_project(s["proj"], s["var"], s["sep"], s["inst"], s.get("desc", ""))
-                    await e.send(e.plain_result(f"✅ 项目「{s['proj']}」创建成功"))
-                    ctl.stop()
+                s["step"] = 5
+                await e.send(e.plain_result("请输入青龙订阅名称（输入q跳过），更新项目时自动运行"))
+                ctl.keep(timeout=WAIT_TIMEOUT)
 
             elif s["step"] == 5:
+                sn = e.message_str.strip()
+                if sn.lower() == "q":
+                    sn = ""
+                s["subname"] = sn; s["step"] = 6
+                await e.send(e.plain_result("请输入脚本文件名（如 ydyp.py，对应 GitHub 仓库里的文件，输入q跳过）"))
+                ctl.keep(timeout=WAIT_TIMEOUT)
+
+            elif s["step"] == 6:
                 sf = e.message_str.strip()
                 if sf.lower() == "q":
                     sf = ""
-                self.storage.save_project(s["proj"], s["var"], s["sep"], s["inst"], s.get("desc", ""), sf)
-                await e.send(e.plain_result(f"✅ 项目「{s['proj']}」创建成功" + (f"，脚本 {sf}" if sf else "")))
+                self.storage.save_project(s["proj"], s["var"], s["sep"], s["inst"], s.get("desc", ""), sf, s.get("subname", ""))
+                msg = f"✅ 项目「{s['proj']}」创建成功"
+                if s.get("subname"): msg += f"，订阅 {s['subname']}"
+                if sf: msg += f"，脚本 {sf}"
+                await e.send(e.plain_result(msg))
                 ctl.stop()
 
         try:
@@ -896,8 +926,29 @@ class QinglongEnvPlugin(Star):
                     return
                 pname = s["upname"]
                 proj = self.storage.get_project(pname)
+                subname = (proj or {}).get("subscription_name", "")
                 sf = (proj or {}).get("script_filename", "")
-                if self.github_raw_base and sf:
+                client = self._get_client(pname)
+                if not client:
+                    await e.send(e.plain_result("青龙实例不可用"))
+                    ctl.stop()
+                    return
+                if subname:
+                    await e.send(e.plain_result(f"⏳ 正在查找订阅「{subname}」..."))
+                    subs = await client.list_subscriptions(subname)
+                    matches = [s for s in subs if s.get("name") == subname]
+                    if not matches:
+                        await e.send(e.plain_result(f"❌ 未找到订阅「{subname}」，请在青龙面板检查"))
+                        ctl.stop()
+                        return
+                    sub_id = matches[0]["id"]
+                    ok = await client.run_subscription(sub_id)
+                    if ok:
+                        await e.send(e.plain_result(f"✅ 已触发订阅「{subname}」运行，青龙正从 GitHub 拉取最新脚本"))
+                    else:
+                        await e.send(e.plain_result("❌ 运行订阅失败，请检查青龙面板状态"))
+                    ctl.stop()
+                elif self.github_raw_base and sf:
                     url = f"{self.github_raw_base}/{sf}"
                     await e.send(e.plain_result(f"⏳ 正在从 GitHub 拉取 {sf}..."))
                     try:
@@ -914,11 +965,6 @@ class QinglongEnvPlugin(Star):
                         return
                     ext = self._detect_extension(content)
                     filename = sf if sf.endswith((".py", ".js")) else sf + ext
-                    client = self._get_client(pname)
-                    if not client:
-                        await e.send(e.plain_result("青龙实例不可用"))
-                        ctl.stop()
-                        return
                     ok = await client.create_or_update_script(filename, content)
                     if ok:
                         await e.send(e.plain_result(f"✅ 脚本「{filename}」已更新到青龙"))
