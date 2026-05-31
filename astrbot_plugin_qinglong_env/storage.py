@@ -35,7 +35,7 @@ class Storage:
         projects = self._load_json(self.projects_file)
         return projects.get(project_name)
 
-    def save_project(self, project_name: str, variable_name: str, separator: str, instance_name: str = "", variable_description: str = "", script_filename: str = ""):
+    def save_project(self, project_name: str, variable_name: str, separator: str, instance_name: str = "", variable_description: str = "", script_filename: str = "", subscription_name: str = ""):
         projects = self._load_json(self.projects_file)
         if project_name not in projects:
             projects[project_name] = {
@@ -44,6 +44,7 @@ class Storage:
                 "separator": separator,
                 "instance_name": instance_name,
                 "script_filename": script_filename,
+                "subscription_name": subscription_name,
                 "accounts": {}
             }
         else:
@@ -53,6 +54,8 @@ class Storage:
             projects[project_name]["instance_name"] = instance_name
             if script_filename:
                 projects[project_name]["script_filename"] = script_filename
+            if subscription_name:
+                projects[project_name]["subscription_name"] = subscription_name
         self._save_json(self.projects_file, projects)
 
     def add_or_update_account(self, project_name: str, remark: str, value: str):
