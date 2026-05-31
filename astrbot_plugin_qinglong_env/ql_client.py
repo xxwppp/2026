@@ -101,3 +101,18 @@ class QinglongClient:
             json={"filename": filename, "content": content},
         )
         return resp is not None and resp.status_code in (200, 201)
+
+    async def list_subscriptions(self, search: str = "") -> List[Dict]:
+        params = {}
+        if search:
+            params["searchValue"] = search
+        resp = await self._request("GET", "/open/subscriptions", params=params)
+        if resp and resp.status_code == 200:
+            return resp.json().get("data", [])
+        return []
+
+    async def run_subscription(self, sub_id: int) -> bool:
+        resp = await self._request(
+            "PUT", "/open/subscriptions/run", json=[sub_id]
+        )
+        return resp is not None and resp.status_code in (200, 201)
