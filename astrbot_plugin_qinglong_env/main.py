@@ -48,6 +48,7 @@ class QinglongEnvPlugin(Star):
         self.plugin_config = config or {}
         self.ql_clients: dict[str, QinglongClient] = {}
         self._session_states: dict[str, dict] = {}
+        self.github_raw_base = (self.plugin_config.get("github_repo_url", "") or "").rstrip("/")
         self._init_ql_clients()
 
     def _init_ql_clients(self):
@@ -490,9 +491,25 @@ class QinglongEnvPlugin(Star):
                     sep = SEPARATOR_ITEMS[int(msg) - 1][0]
                 except (IndexError, ValueError):
                     await e.send(e.plain_result("序号无效")); ctl.keep(timeout=WAIT_TIMEOUT); return
-                self.storage.save_project(s["proj"], s["var"], sep, s["inst"], s.get("desc", ""))
-                await e.send(e.plain_result(f"✅ 项目「{s['proj']}」创建成功"))
-                s["step"] = 0; await e.send(e.plain_result(MAIN_MENU)); ctl.keep(timeout=WAIT_TIMEOUT)
+                s["sep"] = sep
+                if self.github_raw_base:
+                    s["step"] = 45
+                    await e.send(e.plain_result("请输入脚本文件名（如 ydyp.py，对应 GitHub 仓库里的文件，输入q跳过）"))
+                else:
+                    self.storage.save_project(s["proj"], s["var"], s["sep"], s["inst"], s.get("desc", ""))
+                    await e.send(e.plain_result(f"✅ 项目「{s['proj']}」创建成功"))
+                    s["step"] = 0; await e.send(e.plain_result(MAIN_MENU))
+                ctl.keep(timeout=WAIT_TIMEOUT)
+
+            elif s["step"] == 45:
+                sf = e.message_str.strip()
+                if sf.lower() == "q":
+                    sf = ""
+                s["step"] = 0
+                self.storage.save_project(s["proj"], s["var"], s["sep"], s["inst"], s.get("desc", ""), sf)
+                await e.send(e.plain_result(f"✅ 项目「{s['proj']}」创建成功" + (f"，脚本 {sf}" if sf else "")))
+                await e.send(e.plain_result(MAIN_MENU))
+                ctl.keep(timeout=WAIT_TIMEOUT)
 
             # ── 5.更新项目 ──
             elif s["step"] == 50:
@@ -504,9 +521,38 @@ class QinglongEnvPlugin(Star):
                     s["upname"] = projs[int(msg) - 1]
                 except (IndexError, ValueError):
                     await e.send(e.plain_result("序号错误")); ctl.keep(timeout=WAIT_TIMEOUT); return
-                s["step"] = 51
-                await e.send(e.plain_result("请输入脚本内容或 GitHub raw URL\n发 raw URL 自动下载，直接贴代码也行\n（输入q退出）"))
-                ctl.keep(timeout=WAIT_TIMEOUT)
+                pname = s["upname"]
+                proj = self.storage.get_project(pname)
+                sf = (proj or {}).get("script_filename", "")
+                if self.github_raw_base and sf:
+                    url = f"{self.github_raw_base}/{sf}"
+                    await e.send(e.plain_result(f"⏳ 正在从 GitHub 拉取 {sf}..."))
+                    try:
+                        async with httpx.AsyncClient(timeout=30) as http_client:
+                            resp = await http_client.get(url)
+                            if resp.status_code != 200:
+                                await e.send(e.plain_result(f"下载失败，HTTP {resp.status_code}"))
+                                s["step"] = 0; await e.send(e.plain_result(MAIN_MENU)); ctl.keep(timeout=WAIT_TIMEOUT); return
+                            content = resp.text
+                    except Exception as exc:
+                        await e.send(e.plain_result(f"下载失败：{exc}"))
+                        s["step"] = 0; await e.send(e.plain_result(MAIN_MENU)); ctl.keep(timeout=WAIT_TIMEOUT); return
+                    ext = self._detect_extension(content)
+                    filename = sf if sf.endswith((".py", ".js")) else sf + ext
+                    client = self._get_client(pname)
+                    if not client:
+                        await e.send(e.plain_result("青龙实例不可用"))
+                        s["step"] = 0; await e.send(e.plain_result(MAIN_MENU)); ctl.keep(timeout=WAIT_TIMEOUT); return
+                    ok = await client.create_or_update_script(filename, content)
+                    if ok:
+                        await e.send(e.plain_result(f"✅ 脚本「{filename}」已更新到青龙"))
+                    else:
+                        await e.send(e.plain_result("❌ 脚本上传失败，请检查青龙面板状态"))
+                    s["step"] = 0; await e.send(e.plain_result(MAIN_MENU)); ctl.keep(timeout=WAIT_TIMEOUT)
+                else:
+                    s["step"] = 51
+                    await e.send(e.plain_result("请输入脚本内容或 GitHub raw URL\n发 raw URL 自动下载，直接贴代码也行\n（输入q退出）"))
+                    ctl.keep(timeout=WAIT_TIMEOUT)
 
             elif s["step"] == 51:
                 inp = e.message_str.strip()
@@ -640,7 +686,8 @@ class QinglongEnvPlugin(Star):
                 "   2.single - 独立变量\n"
                 "   3.# - 用 # 拼接\n"
                 "   4.@ - 用 @ 拼接\n"
-                "   5.& - 用 & 拼接",
+                "   5.& - 用 & 拼接\n"
+                " 6. 输入脚本文件名（如 ydyp.py，配置后更新项目自动拉取）",
             "项目列表":
                 "查看所有项目（按青龙实例分组显示）。\n"
                 "选中项目后可添加账号：\n"
@@ -660,12 +707,14 @@ class QinglongEnvPlugin(Star):
                 "支持输入 0 全选，删除后自动同步青龙面板",
             "更新项目":
                 "更新青龙面板中对应项目的脚本。\n"
+                "两种模式：\n"
+                " 1.自动模式 — 若项目已配置脚本文件名，选项目后自动从 GitHub 拉取\n"
+                " 2.手动模式 — 输入脚本内容（直接贴代码）或 GitHub raw URL\n\n"
                 "交互流程：\n"
                 " 1. 选择需要更新脚本的项目\n"
-                " 2. 输入脚本内容（直接贴代码）或 GitHub raw URL\n"
-                " 3. 插件自动上传/更新到青龙面板\n\n"
-                "URL 模式：发 https://raw.githubusercontent.com/... 链接\n"
-                "代码模式：直接粘贴脚本代码（注意 QQ 有 2000 字限制）",
+                " 2a. 已配置脚本文件名 → 自动下载更新\n"
+                " 2b. 未配置 → 输入 raw URL 或粘贴代码\n"
+                " 3. 插件自动上传/更新到青龙面板",
             "删除项目":
                 "删除整个项目及其所有账号数据。\n"
                 "交互流程：\n"
@@ -758,8 +807,22 @@ class QinglongEnvPlugin(Star):
                     await e.send(e.plain_result("序号无效"))
                     ctl.keep(timeout=WAIT_TIMEOUT)
                     return
-                self.storage.save_project(s["proj"], s["var"], sep, s["inst"], s.get("desc", ""))
-                await e.send(e.plain_result(f"✅ 项目「{s['proj']}」创建成功"))
+                s["sep"] = sep
+                if self.github_raw_base:
+                    s["step"] = 5
+                    await e.send(e.plain_result("请输入脚本文件名（如 ydyp.py，对应 GitHub 仓库里的文件，输入q跳过）"))
+                    ctl.keep(timeout=WAIT_TIMEOUT)
+                else:
+                    self.storage.save_project(s["proj"], s["var"], s["sep"], s["inst"], s.get("desc", ""))
+                    await e.send(e.plain_result(f"✅ 项目「{s['proj']}」创建成功"))
+                    ctl.stop()
+
+            elif s["step"] == 5:
+                sf = e.message_str.strip()
+                if sf.lower() == "q":
+                    sf = ""
+                self.storage.save_project(s["proj"], s["var"], s["sep"], s["inst"], s.get("desc", ""), sf)
+                await e.send(e.plain_result(f"✅ 项目「{s['proj']}」创建成功" + (f"，脚本 {sf}" if sf else "")))
                 ctl.stop()
 
         try:
@@ -831,9 +894,41 @@ class QinglongEnvPlugin(Star):
                     await e.send(e.plain_result("序号错误"))
                     ctl.keep(timeout=WAIT_TIMEOUT)
                     return
-                s["step"] = 10
-                await e.send(e.plain_result("请输入脚本内容或 GitHub raw URL\n发 raw URL 自动下载，直接贴代码也行\n（输入q退出）"))
-                ctl.keep(timeout=WAIT_TIMEOUT)
+                pname = s["upname"]
+                proj = self.storage.get_project(pname)
+                sf = (proj or {}).get("script_filename", "")
+                if self.github_raw_base and sf:
+                    url = f"{self.github_raw_base}/{sf}"
+                    await e.send(e.plain_result(f"⏳ 正在从 GitHub 拉取 {sf}..."))
+                    try:
+                        async with httpx.AsyncClient(timeout=30) as http_client:
+                            resp = await http_client.get(url)
+                            if resp.status_code != 200:
+                                await e.send(e.plain_result(f"下载失败，HTTP {resp.status_code}"))
+                                ctl.stop()
+                                return
+                            content = resp.text
+                    except Exception as exc:
+                        await e.send(e.plain_result(f"下载失败：{exc}"))
+                        ctl.stop()
+                        return
+                    ext = self._detect_extension(content)
+                    filename = sf if sf.endswith((".py", ".js")) else sf + ext
+                    client = self._get_client(pname)
+                    if not client:
+                        await e.send(e.plain_result("青龙实例不可用"))
+                        ctl.stop()
+                        return
+                    ok = await client.create_or_update_script(filename, content)
+                    if ok:
+                        await e.send(e.plain_result(f"✅ 脚本「{filename}」已更新到青龙"))
+                    else:
+                        await e.send(e.plain_result("❌ 脚本上传失败，请检查青龙面板状态"))
+                    ctl.stop()
+                else:
+                    s["step"] = 10
+                    await e.send(e.plain_result("请输入脚本内容或 GitHub raw URL\n发 raw URL 自动下载，直接贴代码也行\n（输入q退出）"))
+                    ctl.keep(timeout=WAIT_TIMEOUT)
 
             elif s["step"] == 10:
                 inp = e.message_str.strip()
