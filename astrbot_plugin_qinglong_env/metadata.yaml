@@ -1,0 +1,7 @@
+name: astrbot_plugin_qinglong_env
+display_name: 青龙面板环境变量管理
+version: "1.0.0"
+desc: 管理青龙面板的环境变量，支持多账号、多项目
+author: "Your Name"
+repo: "https://github.com/yourname/astrbot_plugin_qinglong_env"
+astrbot_version: ">=4.25,<5"
