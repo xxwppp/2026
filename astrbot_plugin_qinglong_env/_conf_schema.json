@@ -1,0 +1,17 @@
+{
+  "instances": {
+    "type": "template_list",
+    "description": "青龙面板实例列表（可添加多个实例）",
+    "templates": {
+      "default": {
+        "name": "青龙实例",
+        "items": {
+          "name": { "type": "string", "description": "实例名称", "hint": "如 青龙1" },
+          "ql_url": { "type": "string", "description": "青龙面板地址", "hint": "如 http://192.168.1.100:5700" },
+          "client_id": { "type": "string", "description": "Client ID" },
+          "client_secret": { "type": "string", "description": "Client Secret", "secret": true }
+        }
+      }
+    }
+  }
+}
