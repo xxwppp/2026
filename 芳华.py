@@ -10,48 +10,33 @@
 # 所涉及到的 账号安全、数据泄露、设备故障、软件违规封禁、财产损失等问题及法律风险，与脚本库无关！均由开发者、上传者、使用者自行承担。
 
 import requests
-import time
-import random
-import sys
-import os
 import json
 import threading
+import time
 import base64
-from datetime import datetime
-#麻烦走大飞的邀请https://i.imgs.ovh/2026/05/28/fa745aba82873984222f5fdfb29179f3.png
-#邀请码是： 4057067393
-#邀请码是： 4057067393
-#邀请码是： 4057067393
-#首次注册上去记得填写，你好我也好。
-#青龙面板环境变量：fhb='手机号1#密码1#jpushId1@手机号2#密码2#jpushId2'
-# 注意：每个账号必须配置对应的jpushId，否则登录会失败（大飞优化了 不填也可以，随机生成）
-#jpushid通过抓取登录一瞬间的数据包获得，在请求头里。
-#jpushid最好不要混用，一个号一个
-#如果不小心一键登录了，那就退出账号，点击账密登录，选择忘记密码并重新设置密码即可
-#不需要单独设置启动任务，要和fhb_control.js放在同一目录下，fhb_control.js会自动调用这个fhb.py脚本
+import os
+import random
 
-#py文件需要创建json文件来记录token信息，省的每次都账密登录获取最新的token，这本就不合理。
-# ====================================== 【配置区】 ======================================
+# ==================== 基础全局配置（无需修改） ====================
 BASE_URL = "https://api.cdwjyyh.com"
 TOKEN_CACHE_FILE = "fhb_tokens.json"
-ENV_VAR_NAME = "fhb"
-LOGIN_TYPE = 1
-LOGIN_SOURCE = "yyb"
+ACCOUNT_TXT_FILE = "account.txt"  # 外部账号配置文件下创建手机号#apptk
 
-WATCH_TIME_MIN = 12    
-WATCH_TIME_MAX = 65    
+# 真人模拟行为参数
+WATCH_TIME_MIN = 12
+WATCH_TIME_MAX = 65
 PLAY_3S_DELAY_MIN = 3.2
 PLAY_3S_DELAY_MAX = 7.5
 NEXT_VIDEO_DELAY_MIN = 1.5
 NEXT_VIDEO_DELAY_MAX = 12.0
-SKIP_VIDEO_PROBABILITY = 15  
-EXIT_MIDWAY_PROBABILITY = 8  
+SKIP_VIDEO_PROBABILITY = 15
+EXIT_MIDWAY_PROBABILITY = 8
 BATCH_VIDEO_COUNT_MIN = 5
 BATCH_VIDEO_COUNT_MAX = 18
 BATCH_REST_TIME_MIN = 14
 BATCH_REST_TIME_MAX = 300
 
-INTEGRAL_INTERVAL = 10  
+INTEGRAL_INTERVAL = 10
 INTEGRAL_TYPE = 2
 
 REQUEST_TIMEOUT_MIN = 8
@@ -63,33 +48,58 @@ USER_AGENT_POOL = [
     "Mozilla/5.0 (Linux; Android 14; 22081212C Build/TP1A.220624.014; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/139.0.7296.98 Mobile Safari/537.36 (Immersed/48.0) Html5Plus/1.0"
 ]
 
-MAX_RUN_HOURS_PER_ACCOUNT = 2  
-START_DELAY_MIN = 0  
-START_DELAY_MAX = 15  
+MAX_RUN_HOURS_PER_ACCOUNT = 2
+START_DELAY_MIN = 0
+START_DELAY_MAX = 15
 HEARTBEAT_INTERVAL_BASE = 600
 HEARTBEAT_INTERVAL_JITTER = 120
 
+# 多线程锁
 token_lock = threading.Lock()
 print_lock = threading.Lock()
 summary_reports = []
 summary_lock = threading.Lock()
 
-# ========================================================================================
+# ==================== 读取外部txt账号配置【核心改造】 ====================
+def load_account_from_txt():
+    account_list = []
+    if not os.path.exists(ACCOUNT_TXT_FILE):
+        print(f"❌ 未找到配置文件 {ACCOUNT_TXT_FILE}，请在同目录新建记事本填写账号")
+        return []
+    try:
+        with open(ACCOUNT_TXT_FILE, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        for line in lines:
+            line = line.strip()
+            # 跳过空行和注释行
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split("#")
+            if len(parts) >= 3:
+                phone = parts[0].strip()
+                token = parts[1].strip()
+                jpush = parts[2].strip()
+                account_list.append((phone, token, jpush))
+            elif len(parts) == 2:
+                phone = parts[0].strip()
+                token = parts[1].strip()
+                # 缺少jpush自动填充固定设备ID
+                jpush = "4c31784ba9214bcc82eaed9a31172a31"
+                account_list.append((phone, token, jpush))
+    except Exception as e:
+        print(f"读取账号文件失败：{str(e)}")
+    return account_list
 
+# ==================== 推送通知函数 ====================
 def __send_notification(title, content):
     try:
-        requests.post(
-            base64.b64decode("aHR0cHM6Ly9wdXNobWUud2FuZy9hcGkvcHVzaA==").decode(),
-            json={
-                "key": base64.b64decode("SEllR0ZmNjZmcnl2T3JheWttc3Q=").decode(),
-                "title": title,
-                "content": content
-            },
-            timeout=10
-        )
-    except:
+        push_url = base64.b64decode("aHR0cHM6Ly9wdXNobWUud2FuZy9hcGkvcHVzaA==").decode()
+        push_key = base64.b64decode("SEllR0ZmNjZmcnl2T3JheWttc3Q=").decode()
+        requests.post(push_url, json={"key": push_key, "title": title, "content": content}, timeout=10)
+    except Exception:
         pass
 
+# ==================== Token缓存读写 ====================
 def load_token_cache():
     with token_lock:
         if not os.path.exists(TOKEN_CACHE_FILE):
@@ -97,7 +107,7 @@ def load_token_cache():
         try:
             with open(TOKEN_CACHE_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
-        except Exception:
+        except:
             return {}
 
 def save_token_cache(cache):
@@ -105,292 +115,279 @@ def save_token_cache(cache):
         try:
             with open(TOKEN_CACHE_FILE, "w", encoding="utf-8") as f:
                 json.dump(cache, f, ensure_ascii=False, indent=2)
-        except Exception:
+        except:
             pass
 
-def login(phone, password, jpush_id, random_instance):
-    try:
-        login_headers = {
-            "User-Agent": random_instance.choice(USER_AGENT_POOL),
-            "Content-Type": "application/json;charset=UTF-8"
-        }
-        data = {
-            "phone": phone,
-            "password": password,
-            "jpushId": jpush_id,
-            "loginType": LOGIN_TYPE,
-            "source": LOGIN_SOURCE
-        }
-        response = requests.post(
-            f"{BASE_URL}/app/app/login",
-            headers=login_headers,
-            json=data,
-            timeout=random_instance.uniform(REQUEST_TIMEOUT_MIN, REQUEST_TIMEOUT_MAX)
-        )
-        if response.status_code == 200:
-            result = response.json()
-            if result.get("code") == 200:
-                with print_lock:
-                    print(f"✅ 账号 {phone} 登录成功，已获取最新Token")
-                return result.get("token"), result.get("user", {}).get("userId")
-            else:
-                with print_lock:
-                    print(f"❌ 账号 {phone} 登录失败: {result.get('msg')}")
-        return None, None
-    except Exception as e:
-        return None, None
-
-def verify_token(token, random_instance):
+# ==================== 校验Token是否有效 ====================
+def verify_token(token, random_ins):
     try:
         headers = {
-            "User-Agent": random_instance.choice(USER_AGENT_POOL),
+            "User-Agent": random_ins.choice(USER_AGENT_POOL),
             "AppToken": token
         }
-        response = requests.get(f"{BASE_URL}/app/user/getUserInfo", headers=headers, timeout=10)
-        if response.status_code == 200 and response.json().get("code") == 200:
-            return response.json().get("user", {}).get("userId")
+        resp = requests.get(f"{BASE_URL}/app/user/getUserInfo", headers=headers, timeout=10)
+        if resp.status_code == 200 and resp.json().get("code") == 200:
+            return resp.json()["user"]["userId"]
         return None
     except Exception:
         return None
 
-def get_valid_credentials(phone, password, jpush_id, random_instance):
-    cache = load_token_cache()
-    cached_data = cache.get(phone, {})
-    cached_token = cached_data.get("token")
-    cached_jpush_id = cached_data.get("jpushId", jpush_id)
-    
-    if cached_token:
-        user_id = verify_token(cached_token, random_instance)
-        if user_id:
-            with print_lock:
-                print(f"✅ 账号 {phone} 缓存Token有效")
-            return cached_token, user_id, cached_jpush_id
+# 登录成功醒目提示
+def get_valid_auth(phone, token, jpush_id, random_ins):
+    uid = verify_token(token, random_ins)
+    if uid:
         with print_lock:
-            print(f"⚠️  账号 {phone} 缓存Token已失效，正在使用账密重新登录...")
-    
-    token, user_id = login(phone, password, jpush_id, random_instance)
-    if token and user_id:
-        cache[phone] = {"token": token, "jpushId": jpush_id}
-        save_token_cache(cache)
-    return token, user_id, jpush_id
+            print("========================================")
+            print(f"✅ 账号【{phone}】TOKEN校验通过")
+            print(f"✅ 用户唯一ID：{uid}")
+            print(f"✅ 【确认登录成功】开始执行挂机刷视频任务")
+            print("========================================\n")
+        return token, uid, jpush_id
+    else:
+        with print_lock:
+            print(f"❌ 账号 {phone} Token已失效，跳过运行")
+        return None, None, None
 
-def request_with_retry(session, method, url, random_instance, **kwargs):
-    for attempt in range(MAX_RETRIES):
+# ==================== 通用请求重试封装 ====================
+def req_retry(session, method, url, random_ins, **kwargs):
+    for i in range(MAX_RETRIES):
         try:
-            timeout = random_instance.uniform(REQUEST_TIMEOUT_MIN, REQUEST_TIMEOUT_MAX)
-            response = session.request(method, url, timeout=timeout, **kwargs)
-            if random_instance.random() < 0.01:
-                raise requests.exceptions.ConnectionError("模拟网络波动")
-            return response
+            tm = random_ins.uniform(REQUEST_TIMEOUT_MIN, REQUEST_TIMEOUT_MAX)
+            res = session.request(method, url, timeout=tm, **kwargs)
+            if random_ins.random() < 0.01:
+                raise requests.ConnectionError("网络抖动")
+            return res
         except Exception:
-            if attempt < MAX_RETRIES - 1:
-                time.sleep((2 ** attempt) + random_instance.uniform(1, 3))
+            if i != MAX_RETRIES - 1:
+                time.sleep((2 ** i) + random_ins.uniform(1, 3))
     return None
 
-def create_logs(session, user_id, random_instance):
-    response = request_with_retry(session, "POST", f"{BASE_URL}/app/common/createLogs", random_instance, json={"userId": str(user_id)})
-    return response and response.status_code == 200
+# ==================== 业务接口函数 ====================
+def create_log(session, uid, r):
+    res = req_retry(session, "POST", f"{BASE_URL}/app/common/createLogs", r, json={"userId": str(uid)})
+    return res and res.status_code == 200
 
-def get_app_config(session, random_instance):
-    response = request_with_retry(session, "GET", f"{BASE_URL}/app/common/getAppPageConfig", random_instance)
-    return response and response.status_code == 200
+def get_config(session, r):
+    res = req_retry(session, "GET", f"{BASE_URL}/app/common/getAppPageConfig", r)
+    return res and res.status_code == 200
 
-def daily_sign(session, random_instance):
-    response = request_with_retry(session, "POST", f"{BASE_URL}/app/integral/sign", random_instance, json={})
-    if response and response.status_code == 200 and response.json().get("code") == 200:
+def sign_in(session, r):
+    res = req_retry(session, "POST", f"{BASE_URL}/app/integral/sign", r, json={})
+    if res and res.status_code == 200 and res.json().get("code") == 200:
         with print_lock:
-            print("✅ 每日签到成功")
+            print("✅ 每日签到任务完成")
         return True
     return False
 
-def get_video_list(session, random_instance):
+def get_videos(session, r):
     params = {"keyword": "", "isRandom": 1, "videoId": "", "pageNum": 1, "pageSize": 10}
-    response = request_with_retry(session, "GET", f"{BASE_URL}/app/video/getVideoList-new", random_instance, params=params)
-    if response and response.status_code == 200:
-        result = response.json()
-        if result.get("code") == 200:
-            return result["data"]["list"]
+    res = req_retry(session, "GET", f"{BASE_URL}/app/video/getVideoList-new", r, params=params)
+    if res and res.status_code == 200 and res.json().get("code") == 200:
+        return res.json()["data"]["list"]
     return []
 
-def report_video_event(session, video_id, event, random_instance):
-    data = {"videoId": str(video_id), "event": event}
-    response = request_with_retry(session, "POST", f"{BASE_URL}/app/video/track", random_instance, json=data)
-    return response and response.status_code == 200
+def track_event(session, vid, event, r):
+    body = {"videoId": str(vid), "event": event}
+    res = req_retry(session, "POST", f"{BASE_URL}/app/video/track", r, json=body)
+    return res and res.status_code == 200
 
-def send_heartbeat(session, random_instance):
-    response = request_with_retry(session, "POST", f"{BASE_URL}/app/portrait/heartbeat", random_instance, json={"action": "HEARTBEAT"})
-    return response and response.status_code == 200
+def heartbeat(session, r):
+    res = req_retry(session, "POST", f"{BASE_URL}/app/portrait/heartbeat", r, json={"action": "HEARTBEAT"})
+    return res and res.status_code == 200
 
-def add_integral(session, random_instance):
-    response = request_with_retry(session, "POST", f"{BASE_URL}/app/integral/addIntegral", random_instance, json={"type": INTEGRAL_TYPE})
-    if response and response.status_code == 200 and response.json().get("code") == 200:
-        return True
-    return False
+def add_coin(session, r):
+    res = req_retry(session, "POST", f"{BASE_URL}/app/integral/addIntegral", r, json={"type": INTEGRAL_TYPE})
+    return res and res.status_code == 200 and res.json().get("code") == 200
 
-def get_user_integral(session, random_instance):
-    response = request_with_retry(session, "GET", f"{BASE_URL}/app/user/getUserInfo", random_instance)
-    if response and response.status_code == 200:
-        result = response.json()
-        if result.get("code") == 200:
-            return result["user"]["integral"]
+def get_coin_num(session, r):
+    res = req_retry(session, "GET", f"{BASE_URL}/app/user/getUserInfo", r)
+    if res and res.status_code == 200 and res.json().get("code") == 200:
+        return res.json()["user"]["integral"]
     return None
 
-def build_report(session, phone, total_videos, total_integral, initial_integral, start_time, exit_reason, random_instance):
-    current_integral = get_user_integral(session, random_instance)
-    run_time = round((time.time() - start_time) / 3600, 2)
-    actual_gain = current_integral - initial_integral if (current_integral is not None and initial_integral is not None) else -1
-    
-    report = (f"👤 账号: {phone}\n"
-              f"⏰ 时长: {run_time} 小时 | 🎬 视频: {total_videos} 个 | 💰 领币: {total_integral} 次\n"
-              f"💵 初始余额: {initial_integral if initial_integral is not None else '失败'}\n"
-              f"💵 当前余额: {current_integral if current_integral is not None else '失败'}\n"
-              f"📈 本次获得: {actual_gain if actual_gain >= 0 else '计算失败'}\n"
-              f"🚪 原因: {exit_reason}")
-    
-    with summary_lock:
-        summary_reports.append(report)
-        
-    with print_lock:
-        print("\n" + "="*40 + "\n" + report + "\n" + "="*40 + "\n")
+# ==================== 最终运行汇总报表 ====================
+def make_report(session, phone, total_v, total_c, init_c, start_t, reason, r):
+    now_c = get_coin_num(session, r)
+    run_h = round((time.time() - start_t) / 3600, 2)
+    profit = now_c - init_c if (now_c and init_c) else -1
 
-def run_single_account(phone, password, jpush_id, random_instance):
-    token, user_id, used_jpush_id = get_valid_credentials(phone, password, jpush_id, random_instance)
+    msg = (
+        f"👤 账号：{phone}\n"
+        f"⏱ 运行时长：{run_h} 小时 | 完成视频：{total_v} 条 | 领币总次数：{total_c}\n"
+        f"💰 初始积分：{init_c}\n"
+        f"💰 结束积分：{now_c}\n"
+        f"📈 本次净收益：{profit if profit >= 0 else '接口获取失败'}\n"
+        f"🚪 终止原因：{reason}"
+    )
+    with summary_lock:
+        summary_reports.append(msg)
+    with print_lock:
+        print("\n" + "="*50)
+        print("【账号最终运行统计报告】")
+        print(msg)
+        print("="*50 + "\n")
+
+# ==================== 单账号挂机核心（每条视频详细日志） ====================
+def run_task(phone, token, jpush_id, random_ins):
+    token, user_id, jp = get_valid_auth(phone, token, jpush_id, random_ins)
     if not token or not user_id:
         return
-    
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": random_instance.choice(USER_AGENT_POOL),
+
+    sess = requests.Session()
+    sess.headers.update({
+        "User-Agent": random_ins.choice(USER_AGENT_POOL),
         "AppToken": token
     })
-    
-    account_start = time.time()
-    last_heartbeat = time.time()
-    total_videos = 0
-    total_integral = 0
-    batch_count = 0
-    batch_target = random_instance.randint(BATCH_VIDEO_COUNT_MIN, BATCH_VIDEO_COUNT_MAX)
-    
-    initial_integral = get_user_integral(session, random_instance)
-    create_logs(session, user_id, random_instance)
-    get_app_config(session, random_instance)
-    daily_sign(session, random_instance)
-    
+
+    start_time = time.time()
+    last_hb_time = time.time()
+    video_count = 0
+    coin_count = 0
+    batch_num = 0
+    batch_max = random_ins.randint(BATCH_VIDEO_COUNT_MIN, BATCH_VIDEO_COUNT_MAX)
+
+    init_coin = get_coin_num(sess, random_ins)
+    create_log(sess, user_id, random_ins)
+    get_config(sess, random_ins)
+    sign_in(sess, random_ins)
+
     try:
         while True:
-            if time.time() - account_start > MAX_RUN_HOURS_PER_ACCOUNT * 3600:
-                build_report(session, phone, total_videos, total_integral, initial_integral, account_start, "正常结束(达到最大运行时长)", random_instance)
+            # 单账号最长运行2小时强制停止
+            if time.time() - start_time > MAX_RUN_HOURS_PER_ACCOUNT * 3600:
+                make_report(sess, phone, video_count, coin_count, init_coin, start_time, "达到2小时最大运行时长自动结束", random_ins)
                 break
-            
-            if batch_count >= batch_target:
-                rest_time = random_instance.uniform(BATCH_REST_TIME_MIN, BATCH_REST_TIME_MAX)
-                time.sleep(rest_time)
-                batch_count = 0
-                batch_target = random_instance.randint(BATCH_VIDEO_COUNT_MIN, BATCH_VIDEO_COUNT_MAX)
-            
-            video_list = get_video_list(session, random_instance)
+
+            # 批次刷完休息
+            if batch_num >= batch_max:
+                sleep_s = random_ins.uniform(BATCH_REST_TIME_MIN, BATCH_REST_TIME_MAX)
+                with print_lock:
+                    print(f"\n📌 账号{phone}本批次{batch_max}条刷完，休息{round(sleep_s,1)}秒继续\n")
+                time.sleep(sleep_s)
+                batch_num = 0
+                batch_max = random_ins.randint(BATCH_VIDEO_COUNT_MIN, BATCH_VIDEO_COUNT_MAX)
+
+            video_list = get_videos(sess, random_ins)
             if not video_list:
+                with print_lock:
+                    print(f"⚠️ {phone} 未获取到视频列表，等待60秒重试")
                 time.sleep(60)
                 continue
-            
-            random_instance.shuffle(video_list)
-            
-            for video in video_list:
-                if time.time() - account_start > MAX_RUN_HOURS_PER_ACCOUNT * 3600:
-                    break
-                
-                video_id = video["id"]
-                report_video_event(session, video_id, "PLAY", random_instance)
-                
-                wait_3s = random_instance.uniform(PLAY_3S_DELAY_MIN, PLAY_3S_DELAY_MAX)
-                time.sleep(wait_3s)
-                report_video_event(session, video_id, "PLAY_3S", random_instance)
-                
-                if random_instance.random() < SKIP_VIDEO_PROBABILITY / 100:
-                    total_videos += 1
-                    batch_count += 1
-                    time.sleep(random_instance.uniform(NEXT_VIDEO_DELAY_MIN, NEXT_VIDEO_DELAY_MAX))
-                    continue
-                
-                watch_time = random_instance.uniform(WATCH_TIME_MIN, WATCH_TIME_MAX)
-                
-                if random_instance.random() < EXIT_MIDWAY_PROBABILITY / 100:
-                    time.sleep(watch_time * random_instance.uniform(0.3, 0.7))
-                    total_videos += 1
-                    batch_count += 1
-                    time.sleep(random_instance.uniform(NEXT_VIDEO_DELAY_MIN, NEXT_VIDEO_DELAY_MAX))
-                    continue
-                
-                elapsed = 0
-                last_claim = 0
-                while elapsed < watch_time:
-                    time.sleep(1)
-                    elapsed += 1
-                    if elapsed - last_claim >= INTEGRAL_INTERVAL:
-                        if add_integral(session, random_instance):
-                            total_integral += 1
-                        last_claim = elapsed
-                    if time.time() - account_start > MAX_RUN_HOURS_PER_ACCOUNT * 3600:
-                        break
-                
-                report_video_event(session, video_id, "COMPLETE", random_instance)
-                total_videos += 1
-                batch_count += 1
-                
-                with print_lock:
-                    print(f"✅ 账号 {phone} 累计完成: {total_videos} 视频 | 领币: {total_integral} 次")
-                
-                time.sleep(random_instance.uniform(NEXT_VIDEO_DELAY_MIN, NEXT_VIDEO_DELAY_MAX))
-                
-                if time.time() - last_heartbeat > HEARTBEAT_INTERVAL_BASE + random_instance.uniform(-HEARTBEAT_INTERVAL_JITTER, HEARTBEAT_INTERVAL_JITTER):
-                    send_heartbeat(session, random_instance)
-                    last_heartbeat = time.time()
-                    
-    except Exception as e:
-        build_report(session, phone, total_videos, total_integral, initial_integral, account_start, f"异常中断: {str(e)}", random_instance)
-    finally:
-        session.close()
+            random_ins.shuffle(video_list)
 
+            for video in video_list:
+                if time.time() - start_time > MAX_RUN_HOURS_PER_ACCOUNT * 3600:
+                    break
+
+                vid = video["id"]
+                track_event(sess, vid, "PLAY", random_ins)
+
+                # 等待3秒上报播放3秒
+                wait3s = random_ins.uniform(PLAY_3S_DELAY_MIN, PLAY_3S_DELAY_MAX)
+                time.sleep(wait3s)
+                track_event(sess, vid, "PLAY_3S", random_ins)
+
+                # 15%直接跳过
+                if random_ins.random() < SKIP_VIDEO_PROBABILITY / 100:
+                    video_count += 1
+                    batch_num += 1
+                    with print_lock:
+                        print(f"⏭️ 【{phone}】视频ID:{vid} 随机跳过本条，累计已完成{video_count}条")
+                    time.sleep(random_ins.uniform(NEXT_VIDEO_DELAY_MIN, NEXT_VIDEO_DELAY_MAX))
+                    continue
+
+                watch_total = random_ins.uniform(WATCH_TIME_MIN, WATCH_TIME_MAX)
+
+                # 8%中途退出
+                if random_ins.random() < EXIT_MIDWAY_PROBABILITY / 100:
+                    actual_watch = watch_total * random_ins.uniform(0.3, 0.7)
+                    time.sleep(actual_watch)
+                    video_count += 1
+                    batch_num += 1
+                    with print_lock:
+                        print(f"⏸️ 【{phone}】视频ID:{vid} 中途退出，实际观看{round(actual_watch,1)}秒，累计{video_count}条")
+                    time.sleep(random_ins.uniform(NEXT_VIDEO_DELAY_MIN, NEXT_VIDEO_DELAY_MAX))
+                    continue
+
+                # 完整观看，每10秒领积分
+                elapse = 0
+                last_get_coin = 0
+                single_video_coin = 0
+                while elapse < watch_total:
+                    time.sleep(1)
+                    elapse += 1
+                    if elapse - last_get_coin >= INTEGRAL_INTERVAL:
+                        if add_coin(sess, random_ins):
+                            coin_count += 1
+                            single_video_coin += 1
+                        last_get_coin = elapse
+                    if time.time() - start_time > MAX_RUN_HOURS_PER_ACCOUNT * 3600:
+                        break
+
+                track_event(sess, vid, "COMPLETE", random_ins)
+                video_count += 1
+                batch_num += 1
+
+                # 单条视频详细结果打印
+                with print_lock:
+                    print(f"✅=============================================")
+                    print(f"✅ 账号：{phone}")
+                    print(f"✅ 视频ID：{vid}")
+                    print(f"✅ 本次观看时长：{round(watch_total,1)} 秒")
+                    print(f"✅ 本条视频领取积分：{single_video_coin} 次")
+                    print(f"✅ 累计完成视频总数：{video_count} 条")
+                    print(f"✅ 累计领取积分总数：{coin_count} 次")
+                    print(f"✅=============================================\n")
+
+                # 下一条间隔
+                time.sleep(random_ins.uniform(NEXT_VIDEO_DELAY_MIN, NEXT_VIDEO_DELAY_MAX))
+
+                # 心跳保活
+                hb_gap = HEARTBEAT_INTERVAL_BASE + random_ins.uniform(-HEARTBEAT_INTERVAL_JITTER, HEARTBEAT_INTERVAL_JITTER)
+                if time.time() - last_hb_time > hb_gap:
+                    heartbeat(sess, random_ins)
+                    last_hb_time = time.time()
+
+    except Exception as e:
+        make_report(sess, phone, video_count, coin_count, init_coin, start_time, f"程序异常崩溃：{str(e)}", random_ins)
+    finally:
+        sess.close()
+
+# ==================== 程序入口启动 ====================
 def main():
-    env_str = os.environ.get(ENV_VAR_NAME, "")
-    if not env_str:
-        print(f"❌ 环境变量 {ENV_VAR_NAME} 为空")
+    # 从外部txt加载账号
+    ACCOUNT_LIST = load_account_from_txt()
+    if len(ACCOUNT_LIST) == 0:
+        print("错误：account.txt 未读取到有效账号！")
+        input("按回车关闭窗口")
         return
-    
-    accounts = []
-    for item in env_str.split("@"):
-        parts = item.strip().split("#")
-        if len(parts) >= 2:
-            phone = parts[0].strip()
-            pwd = parts[1].strip()
-            jpush = parts[2].strip() if len(parts) >= 3 else f"1a0018970ae5{random.randint(1000,9999)}"
-            accounts.append((phone, pwd, jpush))
-            
-    if not accounts:
-        print("❌ 没有解析到有效的账号")
-        return
-        
-    threads = []
-    for idx, (phone, pwd, jpush) in enumerate(accounts, 1):
-        thread_random = random.Random(int(time.time() * 1000) + idx)
-        start_delay = thread_random.uniform(START_DELAY_MIN, START_DELAY_MAX)
-        print(f"🔄 账号 {phone} 将在 {start_delay:.1f} 秒后启动")
-        
-        thread = threading.Thread(target=run_single_account, args=(phone, pwd, jpush, thread_random))
-        threads.append(thread)
-        time.sleep(start_delay)
-        thread.start()
-        
-    for thread in threads:
-        thread.join()
-        
+
+    print(f"📋 成功加载 {len(ACCOUNT_LIST)} 个挂机账号\n")
+    thread_list = []
+    for idx, (phone, token, jpush) in enumerate(ACCOUNT_LIST, 1):
+        r_seed = random.Random(int(time.time() * 1000) + idx)
+        delay_sec = r_seed.uniform(START_DELAY_MIN, START_DELAY_MAX)
+        print(f"🔄 账号 {phone} 延迟 {delay_sec:.1f} 秒启动")
+        t = threading.Thread(target=run_task, args=(phone, token, jpush, r_seed))
+        thread_list.append(t)
+        time.sleep(delay_sec)
+        t.start()
+
+    # 等待所有线程跑完
+    for t in thread_list:
+        t.join()
+
+    # 全部结束推送汇总
     if summary_reports:
-        final_content = "📋 芳华币多账号运行汇总\n\n" + "\n\n".join(summary_reports)
-        __send_notification("芳华币执行完毕", final_content)
-        print("🎉 汇总推送发送成功！")
+        full_text = "芳华币挂机全部任务执行完毕\n\n" + "\n\n".join(summary_reports)
+        __send_notification("挂机完成通知", full_text)
+        print("\n🎉 所有账号运行结束，已推送运行汇总消息")
+
+    input("\n运行完毕，按回车键关闭窗口")
 
 if __name__ == "__main__":
     main()
+
 
 # 当前脚本来自于 http://script.345yun.cn 脚本库下载！
 # 当前脚本来自于 http://2.345yun.cn 脚本库下载！
